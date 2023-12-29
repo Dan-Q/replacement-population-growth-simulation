@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Replacement Population Growth Simulation</title>
+</head>
+<body>
+  <main id="popsim-wrapper-834647825">
+    <table class="popsim-graph" style="width: 100%;"></table>
+    <table class="popsim-stats" style="text-align: center;">
+      <thead>
+        <tr>
+          <th>Population</th>
+          <th>Highest population</th>
+          <th>Lowest population</th>
+          <th>Life Expectancy</th>
+          <th>Childbearing age</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="popsim-stats-population"></td>
+          <td class="popsim-stats-highest-population"></td>
+          <td class="popsim-stats-lowest-population"></td>
+          <td class="popsim-stats-life-expectancy"></td>
+          <td class="popsim-stats-childbearing-age"></td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="popsim-controls">
+      <button class="popsim-reset">Reset</button>
+      <button class="popsim-pause">Play/pause</button>
+      <button class="popsim-faster">Faster</button>
+      <button class="popsim-slower">Slower</button>
+      <button class="popsim-incease-life-expectancy">Increase life expectancy</button>
+      <button class="popsim-decrease-life-expectancy">Decrease life expectancy</button>
+    </p>
+  </main>
+  <script type="text/javascript">
+    const app = document.getElementById('popsim-wrapper-834647825');
+    const graph = app.querySelector('.popsim-graph');
+    const statsPopulation = app.querySelector('.popsim-stats-population');
+    const statsHighestPopulation = app.querySelector('.popsim-stats-highest-population');
+    const statsLowestPopulation = app.querySelector('.popsim-stats-lowest-population');
+    const statsLifeExpectancy = app.querySelector('.popsim-stats-life-expectancy');
+    const statsChildbearingAge = app.querySelector('.popsim-stats-childbearing-age');
+
+    const initialPopulationCount = 100;
+    const initialPopulationMeanAgeSkew = 1.5; // population skews young
+    const initialPopulationLifeExpectancy = 70;
+    const lifeExpectancyControlStep = 10;
+    const maximumLifeExpectancy = 100;
+    const maxAge = Math.max(initialPopulationLifeExpectancy, maximumLifeExpectancy);
+    const birthRate = 1; // replacement birth rate; i.e. each person spawns one person
+    // age at which a pop becomes a parent to one child:
+    const parenthoodAgeMin = 20;
+    const parenthoodAgeMax = 30;
+
+    const graphScale = 300; // pixels tall
+    const graphScaleMultiplier = 1.5; // make bars appear this much taller to fill the space better
+
+    let simulationSpeed = 50;
+    let paused = true;
+    let graphBucketSize, population, highestPopulation, lowestPopulation, lifeExpectancy, lowestPopulationCount, highestPopulationCount;
+
+    // Controls
+    app.querySelector('.popsim-reset').addEventListener('click', reset);
+    app.querySelector('.popsim-pause').addEventListener('click', ()=>paused=!paused);
+    app.querySelector('.popsim-faster').addEventListener('click', ()=>simulationSpeed/=2);
+    app.querySelector('.popsim-slower').addEventListener('click', ()=>simulationSpeed*=2);
+    app.querySelector('.popsim-incease-life-expectancy').addEventListener('click', ()=>{
+      if((lifeExpectancy + lifeExpectancyControlStep) > maximumLifeExpectancy) return;
+      lifeExpectancy += lifeExpectancyControlStep;
+    });
+    app.querySelector('.popsim-decrease-life-expectancy').addEventListener('click', ()=>{
+      if((lifeExpectancy - lifeExpectancyControlStep) < parenthoodAgeMax) return;
+      lifeExpectancy -= lifeExpectancyControlStep;
+    });
+
+    // Get mode value of array
+    Array.prototype.mode = function(){
+      const temp = Array.from(this);
+      return temp.sort((a,b) => temp.filter(v => v===a).length - temp.filter(v => v===b).length).pop();
+    }
+
+    // Generate a random age for an initial population member, assuming population
+    // is normally distributed (with a skew).
+    // Adapted from https://stackoverflow.com/questions/25582882/javascript-math-random-normal-distribution-gaussian-bell-curve#answer-49434653
+    function randomAge() {
+      let u = 0, v = 0;
+      while(u === 0) u = Math.random();
+      while(v === 0) v = Math.random();
+      let num = Math.sqrt( -2.0 * Math.log( u ) ) * Math.cos( 2.0 * Math.PI * v );
+      num = num / 10.0 + 0.5; // translate to 0 -> 1
+      if (num > 1 || num < 0) return randomAge(); // recurse to resample between 0 and 1 if out of range
+      num = Math.pow(num, initialPopulationMeanAgeSkew); // skew
+      return Math.floor(num * initialPopulationLifeExpectancy); // stretch to fill range
+    }
+
+    // Comes up with a random age, evenly-distributed, between the minimum and maximum, at which people will become a parent.
+    // Generate a random parenthood age for an initial population member, assuming population
+    // is normally distributed (with a skew).
+    function randomParenthoodAge(){
+      let u = 0, v = 0;
+      while(u === 0) u = Math.random();
+      while(v === 0) v = Math.random();
+      let num = Math.sqrt( -2.0 * Math.log( u ) ) * Math.cos( 2.0 * Math.PI * v );
+      num = num / 10.0 + 0.5; // translate to 0 -> 1
+      if (num > 1 || num < 0) return randomAge(); // recurse to resample between 0 and 1 if out of range
+      return Math.floor(num * (parenthoodAgeMax - parenthoodAgeMin)) + parenthoodAgeMin;
+    }
+
+    // Redraw
+    function updateOutput(){
+      // update population counts:
+      let populationCounts = new Array(maxAge + 1).fill(0);
+      population.forEach(function(p){
+        populationCounts[p.age]++;
+      });
+      if(population.length > highestPopulation || !highestPopulation) highestPopulation = population.length;
+      if(population.length < lowestPopulation || !lowestPopulation) lowestPopulation = population.length;
+      // update graph:
+      for (let i = 0; i <= maxAge; i+=graphBucketSize){
+        const cell = graph.querySelector(`[data-age="${i}"]`);
+        const peopleInBucket = populationCounts.slice(i, i+graphBucketSize).map(i=>isNaN(i)?0:i).reduce((a,b)=>a+b);
+        if(isNaN(peopleInBucket)) debugger;
+        cell.innerText = peopleInBucket;
+        let barHeight = parseFloat(peopleInBucket) / population.length * graphScale * graphScaleMultiplier;
+        if(0 === peopleInBucket) barHeight = 0; // force zero-height bar everywhere if population extinct
+        cell.style.background = `linear-gradient(0deg, #155a93 ${barHeight}px, transparent ${barHeight}px)`;
+      }
+      // update stats table:
+      statsPopulation.innerText = population.length;
+      statsHighestPopulation.innerText = highestPopulation;
+      statsLowestPopulation.innerText = lowestPopulation;
+      statsLifeExpectancy.innerText = lifeExpectancy;
+      statsChildbearingAge.innerText = `${parenthoodAgeMin} - ${parenthoodAgeMax}`;
+    }
+
+    // Reset the simulation:
+    function reset(){
+      // set up magic numbers
+      graphBucketSize = 10 - Math.ceil(window.innerWidth / graphScale); // years sequential age
+      lifeExpectancy = initialPopulationLifeExpectancy;
+      highestPopulation = null;
+      lowestPopulation = null;
+      // set up graph
+      let graphFootHTML = '';
+      let graphBodyHTML = '';
+      for (let i = 0; i <= maxAge; i+=graphBucketSize){
+        const minAge = i;
+        const maxAge = Math.min(maximumLifeExpectancy, i+graphBucketSize-1);
+        if(maxAge > minAge){
+          graphFootHTML += `<td>${minAge} - ${maxAge}</td>`;
+        } else {
+          graphFootHTML += `<td>${minAge}</td>`;
+        }
+        graphBodyHTML += `<td data-age="${i}"></td>`;
+      }
+      graph.innerHTML = `<tbody style="height: ${graphScale}px; vertical-align: top; writing-mode: sideways-lr; font-size: 80%;"><tr>${graphBodyHTML}</tr></tbody><tfoot style="writing-mode: sideways-lr; font-size: 80%;"><tr>${graphFootHTML}</tr></tfoot>`;
+      // generate population
+      population = [];
+      for (let i = 0; i < initialPopulationCount; i++){
+        population.push({ age: randomAge(), parenthoodAge: randomParenthoodAge() })
+      }
+      // update output
+      updateOutput();
+    }
+
+    // Perform a simulation "tick"
+    function tick(){
+      if(!paused){
+        // make everybody a year older:
+        population.forEach(p=>p.age++);
+        // anybody of birthing age has a child:
+        for(let i=0; i < population.filter(p=>p.age===p.parenthoodAge).length; i++){
+          population.push({ age: 0, parenthoodAge: randomParenthoodAge() });
+        }
+        // anybody above dying age dies:
+        population = population.filter(p=>p.age<=lifeExpectancy);
+        // update the output:
+        updateOutput();
+      }
+      // prep the next tick
+      setTimeout(tick, simulationSpeed);
+    }
+
+    // Start simulation
+    reset();
+    setTimeout(tick, simulationSpeed);
+  </script>
+</body>
+</html>
